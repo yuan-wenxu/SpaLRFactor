@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spalrfactor"
+version = "0.1.0"
+description = "Directional spatial ligand-receptor scoring"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE"}
+dependencies = [
+    "anndata>=0.10,<1",
+    "numpy>=1.26,<3",
+    "pandas>=2.1,<4",
+    "scipy>=1.11,<2",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
