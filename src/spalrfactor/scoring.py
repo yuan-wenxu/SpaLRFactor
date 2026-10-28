@@ -73,7 +73,25 @@ def _prepare_pairs(pairs: pd.DataFrame, features: pd.Index) -> pd.DataFrame:
             raise ValueError(f"Empty identifiers in {column}")
     if pairs["lr_pair"].duplicated().any():
         raise ValueError("lr_pair identifiers must be unique")
-    genes = pd.Index(pd.unique(pairs[required[1:]].to_numpy().ravel()))
+    all_genes = []
+    for column in required[1:]:
+        entities = []
+        for value in pairs[column]:
+            subunits = [gene.strip() for gene in value.split(";")]
+            if not all(subunits):
+                raise ValueError(f"Empty subunit IDs in {column}: {value}")
+            if any("|" in gene for gene in subunits):
+                raise ValueError(
+                    f"Ambiguous subunit IDs in {column}: {value}"
+                )
+            if len(set(subunits)) != len(subunits):
+                raise ValueError(
+                    f"Duplicate subunit IDs in {column}: {value}"
+                )
+            entities.append(";".join(subunits))
+            all_genes.extend(subunits)
+        pairs[column] = entities
+    genes = pd.Index(pd.unique(np.asarray(all_genes, dtype=str)))
     missing = genes.difference(features)
     if len(missing):
         raise ValueError(f"Unmatched feature IDs: {missing.tolist()}")
@@ -100,16 +118,26 @@ def _expression(
         raise ValueError(
             "Every spot must have a positive finite count library"
         )
-    genes = pd.Index(pd.unique(pairs[[
+    entities = pd.Index(pd.unique(pairs[[
         "ligand_feature_id", "receptor_feature_id",
     ]].to_numpy().ravel()))
+    subunit_lists = [entity.split(";") for entity in entities]
+    genes = pd.Index(pd.unique(np.asarray([
+        gene for subunits in subunit_lists for gene in subunits
+    ], dtype=str)))
     values = counts[:, data.var_names.get_indexer(genes)].toarray()
     values /= total_counts_per_cell[:, None]
     values *= target_sum
     np.log1p(values, out=values)
-    ligand_indices = genes.get_indexer(pairs["ligand_feature_id"])
-    receptor_indices = genes.get_indexer(pairs["receptor_feature_id"])
-    return values, ligand_indices, receptor_indices, total_counts_per_cell
+    expression = np.empty((data.n_obs, len(entities)))
+    for index, subunits in enumerate(subunit_lists):
+        indices = genes.get_indexer(subunits)
+        expression[:, index] = values[:, indices].min(axis=1)
+    ligand_indices = entities.get_indexer(pairs["ligand_feature_id"])
+    receptor_indices = entities.get_indexer(pairs["receptor_feature_id"])
+    return (
+        expression, ligand_indices, receptor_indices, total_counts_per_cell,
+    )
 
 
 def score_lr(
@@ -125,6 +153,13 @@ def score_lr(
     """Compute both directional scores without modifying the input AnnData.
 
     Expression E = log1p(counts / total_counts_per_cell * target_sum).
+    Feature IDs for required subunits are separated by semicolons in
+    ligand_feature_id and receptor_feature_id. Each entity uses the minimum
+    E across its subunits, assuming 1:1 assembly. Complex expression is
+    computed within each spot before neighborhood averaging. A zero in any
+    required subunit gives zero complex expression; missing feature IDs
+    raise an error.
+
     With row-normalized Gaussian neighborhood weights W:
         outgoing[i, p] = E[i, ligand[p]] * (W @ E[:, receptor[p]])[i]
         incoming[i, p] = E[i, receptor[p]] * (W @ E[:, ligand[p]])[i]
